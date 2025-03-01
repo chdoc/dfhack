@@ -94,8 +94,6 @@ auto create_field(OGRLayer *layer, std::string name, OGRFieldType type, int widt
 // PROJ.4 description of EPSG:3857 (https://epsg.io/3857)
 static const char* EPSG_3857 = "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs +type=crs";
 
-
-
 const char* describe_surroundings(int savagery, int evilness) {
     constexpr std::array<const char*,9>surroundings{
         "Serene",   "Mirthful",     "Joyous Wilds",
@@ -116,7 +114,7 @@ static command_result do_command(color_ostream &out, vector<string> &parameters)
         return CR_WRONG_USAGE;
     }
 
-    out.print("%lu out of %d region map tiles loaded\n",
+    out.print("%lu / %d region map tiles loaded\n",
         world->world_data->midmap_data.region_details.size(),
         world->world_data->world_width * world->world_data->world_height
     );
@@ -135,8 +133,6 @@ static command_result do_command(color_ostream &out, vector<string> &parameters)
     GDALAllRegister();
     const char *driver_name = "Parquet";
     const char *extension = "parquet";
-    // const char *driver_name = "GPKG";
-    // const char *extension = "gpkg";
     auto driver = GetGDALDriverManager()->GetDriverByName(driver_name);
     CHECK_NULL_POINTER(driver);
 
@@ -170,36 +166,19 @@ static command_result do_command(color_ostream &out, vector<string> &parameters)
         create_field(layer, "snowfall", OFTInteger);
         create_field(layer, "salinity", OFTInteger);
 
-        create_field(layer, "reanimating", OFTInteger, OFSTBoolean);
-        create_field(layer, "has_bogeymen", OFTInteger, OFSTBoolean);
+        create_field(layer, "reanimating", OFTInteger, 0, OFSTBoolean);
+        create_field(layer, "has_bogeymen", OFTInteger, 0, OFSTBoolean);
 
     }catch (const DFHack::command_result& r) {
         out.printerr("could not create fields for output layer");
         return r;
     }
 
-    #define REGION 1
-    #ifndef REGION
-    for (int x = 0; x < world->world_data->world_width; ++x) {
-        for (int y = 0; y < world->world_data->world_height; ++y) {
-            // auto& entry = world->world_data->region_map[x][y];
-
-            auto feature = OGRFeature::CreateFeature( layer->GetLayerDefn() );
-            setGeometry(feature, x, y, 1.0);
-
-            auto biome = ENUM_KEY_STR(biome_type, Maps::getBiomeType(x,y));
-            feature->SetField( "biome_type", biome.c_str() );
-
-            // updates the feature with the id it receives in the layer
-            if( layer->CreateFeature( feature ) != OGRERR_NONE )
-                return CR_FAILURE;
-
-            OGRFeature::DestroyFeature( feature );
-        }
-    }Maps::getBiomeType(world_x + x_offset,world_y + y_offset));
-    #else
     int wdim = 768; // dimension of a world tile
     int rdim = 48;  // dimension of a region tile
+
+    // iterating over the region details allows the user to do partial map exports
+    // by manually scrolling on the embark site selection
     for (auto const region_details : world->world_data->midmap_data.region_details) {
         auto world_x = region_details->pos.x;
         auto world_y = region_details->pos.y;
@@ -220,8 +199,8 @@ static command_result do_command(color_ostream &out, vector<string> &parameters)
                 feature->SetField( "elevation", region_details->elevation[region_x][region_y]);
 
                 // gets supplementary information from the world tile
-                auto& world_entry = world->world_data->region_map[biome_x][biome_y];
-                #define SET_FIELD(name) feature->SetField( #name, world_entry.name)
+                auto& region_map_entry = world->world_data->region_map[biome_x][biome_y];
+                #define SET_FIELD(name) feature->SetField( #name, region_map_entry.name)
                 SET_FIELD(region_id);
                 SET_FIELD(landmass_id);
                 SET_FIELD(evilness);
@@ -235,9 +214,9 @@ static command_result do_command(color_ostream &out, vector<string> &parameters)
                 SET_FIELD(salinity);
                 #undef SET_FIELD
 
-                feature->SetField( "surroundings", describe_surroundings(world_entry.savagery, world_entry.evilness));
+                feature->SetField( "surroundings", describe_surroundings(region_map_entry.savagery, region_map_entry.evilness));
 
-                auto region = df::world_region::find(world_entry.region_id);
+                auto region = df::world_region::find(region_map_entry.region_id);
                 if (region) {
                     auto region_name_en = DF2UTF(Translation::translateName(&region->name, true));
                     feature->SetField( "region_name_en", region_name_en.c_str());
@@ -246,7 +225,7 @@ static command_result do_command(color_ostream &out, vector<string> &parameters)
                     feature->SetField("reanimating", region->reanimating);
                     feature->SetField("has_bogeymen", region->has_bogeymen);
                 }
-                auto landmass = df::world_landmass::find(world_entry.landmass_id);
+                auto landmass = df::world_landmass::find(region_map_entry.landmass_id);
                 if (landmass) {
                     auto landmass_name_en = DF2UTF(Translation::translateName(&landmass->name, true));
                     feature->SetField( "landmass_name_en", landmass_name_en.c_str());
@@ -262,7 +241,6 @@ static command_result do_command(color_ostream &out, vector<string> &parameters)
             }
         }
     }
-    #endif
 
     GDALClose( dataset );
     const auto finish{std::chrono::steady_clock::now()};
