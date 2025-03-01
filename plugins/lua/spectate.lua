@@ -167,50 +167,64 @@ local function set_setting(args)
     if n == 0 then
         qerror('missing key')
     end
-    local key = table.remove(args, 1)
-    if config[key] == nil then
-        qerror('unknown setting: ' .. key)
-    end
-    n = #args
-    if n == 0 then
-        qerror('missing value')
-    end
 
-    if n == 1 then
-        local value = args[1]
-        if key == 'follow-seconds' then
-            value = argparse.positiveInt(value, 'follow-seconds')
-        elseif key == 'tooltip-follow-blink-milliseconds' then
-            value = argparse.nonnegativeInt(value, 'tooltip-follow-blink-milliseconds')
+    local cfg = config
+    local v
+    for i = 1, n do
+        v = cfg[args[i]]
+        if v == nil then
+            -- probably an unknown option, but we may allow adding new keys
+            break
+        elseif type(v) == 'table' then
+            if i == n then
+                -- arrived at the very last argument, but have a table
+                qerror('missing value for ' .. table.concat(args, '/', 1, i))
+            end
+            cfg = v
         else
-            value = argparse.boolean(value, key)
-        end
-
-        config[key] = value
-
-        if not key:startswith(lua_only_settings_prefix) then
-            if type(value) == 'boolean' then
-                value = value and 1 or 0
+            -- arrived at something that's not a table
+            if i == n-1 then
+                -- if there is exactly 1 argument left, we're good
+                break
+            elseif i == n then
+                qerror('missing value for ' .. table.concat(args, '/', 1, i))
+            else -- i < n-1 then
+                qerror('too many arguments for ' .. table.concat(args, '/', 1, i))
             end
-            spectate_setSetting(key, value)
         end
-    else
-        local t = config[key]
-        for i = 1, n - 2 do
-            t = t[args[i]]
-        end
-        local k = args[n-1]
-        local v = args[n]
-        if key ~= 'tooltip-follow-job-shortenings' then
+    end
+    if v == nil then
+        if n == 3 and args[1] == 'tooltip-follow-job-shortenings' then
             -- user should be able to add new shortenings, but not other things
-            if t[k] == nil then
-                table.remove(args)
-                qerror('unknown setting: ' .. key .. '/' .. table.concat(args, '/'))
-            elseif key:endswith('-stress-levels') and key ~= 'tooltip-stress-levels' then
-                v = argparse.boolean(v, key .. '/' .. k)
-            end
+        else
+            qerror('unknown option: ' .. table.concat(args, '/', 1, i))
         end
-        t[k] = v
+    end
+
+    local path = table.concat(args, '/', 1, n-1)
+    local key = args[n-1]
+    local value = args[n]
+    local entry_type = type(cfg[key])
+    if entry_type == 'table' then
+        -- here just in case, is already checked in the loop above
+        qerror('missing value for ' .. path)
+    elseif entry_type == 'boolean' then
+        value = argparse.boolean(value, path)
+    elseif entry_type == 'number' then
+        if path == 'follow-seconds' then
+            value = argparse.positiveInt(value, path)
+        else
+            value = argparse.nonnegativeInt(value, path)
+        end
+    end
+
+    cfg[key] = value
+
+    if n == 2 and not key:startswith(lua_only_settings_prefix) then
+        if type(value) == 'boolean' then
+            value = value and 1 or 0
+        end
+        spectate_setSetting(key, value)
     end
 
     save_state()
@@ -414,6 +428,8 @@ function TooltipOverlay:render_unit_banners(dc)
     local oneTileOffset = GetScreenCoordinates({x = topleft.x + 1, y = topleft.y + 1, z = topleft.z + 0})
     local pen = COLOR_WHITE
 
+    local _, screenHeight = dfhack.screen:getWindowSize()
+
     local used_tiles = {}
     -- reverse order yields better offsets for overlapping texts
     for i = #units, 1, -1 do
@@ -432,6 +448,10 @@ function TooltipOverlay:render_unit_banners(dc)
         local scrPos = GetScreenCoordinates(pos)
         local y = scrPos.y - 1 -- subtract 1 to move the text over the heads
         local x = scrPos.x + oneTileOffset.x - 1 -- subtract 1 to move the text inside the map tile
+
+        -- do not write anything in the top rows, where DF's interface is.
+        -- todo: use precise rectangles
+        if y < 4 then goto continue end
 
         -- to resolve overlaps, we'll mark every coordinate we write anything in,
         -- and then check if the new tooltip will overwrite any used coordinate.
@@ -463,15 +483,19 @@ function TooltipOverlay:render_unit_banners(dc)
         -- we can't place any useful information, and will ignore it instead.
         if 0 <= usedAt and usedAt <= 2 then goto continue end
 
-        local writer = dc:seek(x, y + dy)
+        -- do not write anything over DF's interface
+        -- todo: use precise rectangles
+        if y + dy > screenHeight - 4 then goto continue end
+
+        dc:seek(x, y + dy)
         local ix = 0
         for _, tok in ipairs(info) do
             local s
             if type(tok) == "string" then
-                writer = writer:pen(pen)
+                dc:pen(pen)
                 s = tok
             else
-                writer = writer:pen(tok.pen)
+                dc:pen(tok.pen)
                 s = tok.text
             end
 
@@ -482,10 +506,10 @@ function TooltipOverlay:render_unit_banners(dc)
                 -- we want to replace it with an `_`, so we need another `- 1`
                 s = s:sub(1, usedAt - len - ix - 1 - 1) .. '_'
 
-                writer = writer:string(s)
+                dc:string(s)
                 break -- nothing more will fit
             else
-                writer = writer:string(s)
+                dc:string(s)
             end
 
             ix = ix + len
@@ -590,7 +614,7 @@ function FollowPanelOverlay:init()
             on_click=spectate_followNext,
         },
         widgets.Label{
-            frame={l=10, t=0, w=25},
+            frame={l=10, t=0, w=14},
             text={
                 ' spectate:',
                 {text=function() return isEnabled() and ' on ' or 'off ' end,
